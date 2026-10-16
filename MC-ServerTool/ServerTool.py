@@ -7,20 +7,24 @@ import hashlib
 BASENAME = os.path.basename(__file__)
 USAGE = (
     "Usage:\n"
-    f"  python {BASENAME} <jdk|paper> <version>\n"
+    f"  python {BASENAME} jdk <version>\n"
+    f"  python {BASENAME} paper <version|latest> [path]\n"
     "\n"
     "Examples:\n"
     f"  python {BASENAME} jdk 17\n"
-    f"  python {BASENAME} paper 26.1.2"
+    f"  python {BASENAME} paper 26.1.2\n"
+    f"  python {BASENAME} paper latest\n"
+    f"  python {BASENAME} paper 26.1.2 C:\\path\\to\\save"
 )
 
-if len(sys.argv) < 3 or sys.argv[1] not in ("jdk", "paper"):
+if len(sys.argv) < 3 or len(sys.argv) > 4 or sys.argv[1] not in ("jdk", "paper"):
     print(USAGE)
     sys.exit(1)
 
 HEADERS = {"User-Agent": "MC-ServerTool/1.0.0"}
 PAPER_URL = "https://fill.papermc.io/v3"
 ASSETS_URL = "https://api.adoptium.net/v3/assets/latest/{version}/hotspot"
+MC_URL = "https://piston-meta.mojang.com/mc/game/version_manifest.json"
 TIMEOUT = 30 # seconds
 
 MSI_OK = (0, 3010) # 0 = success, 3010 = success but a reboot is required
@@ -32,6 +36,16 @@ def get_file_sha256(file_path: str) -> str:
             sha256_hash.update(chunk)
     return sha256_hash.hexdigest()
 
+def get_MC_latest_version() -> str:
+    with requests.get(
+    MC_URL, headers=HEADERS, timeout=TIMEOUT
+    ) as response:
+        if response.status_code != 200:
+            print(f"Failed to fetch Minecraft version (HTTP status: {response.status_code}).")
+            sys.exit(1)
+    data = response.json()
+    return data["latest"]["release"]
+    
 def get_latest_version(version: str) -> dict:
     with requests.get(
         f"{PAPER_URL}/projects/paper/versions/{version}/builds",
@@ -49,9 +63,21 @@ def get_latest_version(version: str) -> dict:
     sys.exit(1)
 
 def download_paper(build: dict, download_key: str = "server:default"):
+    path = sys.argv[3] if len(sys.argv) == 4 else None
+    if path:
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as e:
+            print(f"Cannot use path '{path}': {e}")
+            sys.exit(1)
     download_info = build["downloads"][download_key]
     url = download_info["url"]
-    output_path = os.path.basename(download_info["name"])
+    if path:
+        file_name = os.path.basename(download_info["name"])
+        output_path = os.path.join(path, file_name)
+    else:
+        output_path = os.path.basename(download_info["name"])
+
     sha256 = download_info["checksums"]["sha256"].lower()
 
     print("Downloading Paper...")
@@ -63,7 +89,7 @@ def download_paper(build: dict, download_key: str = "server:default"):
             with open(output_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
-                        f.write(chunk)              
+                        f.write(chunk)
                         
         except BaseException:
             if os.path.exists(output_path):
@@ -73,7 +99,8 @@ def download_paper(build: dict, download_key: str = "server:default"):
         print("Checksum mismatch! The downloaded file is deleted.")
         os.remove(output_path)
         sys.exit(1)
-    print(f"Paper has been downloaded as {output_path}")
+    abs_path = os.path.abspath(output_path)
+    print(f"Paper has been downloaded as {abs_path}")
 
 def main():
     if sys.argv[1] == "jdk":
@@ -93,7 +120,7 @@ def main():
         if not assets:
             print(f"No JDK {version} installer found.")
             sys.exit(1)
-        installer = assets[0]["binary"]["installer"]
+        installer = assets[0].get("binary", {}).get("installer")
         if installer is None:
             print(f"No JDK {version} installer (.msi) found.")
             sys.exit(1)
@@ -115,7 +142,8 @@ def main():
                 print("Checksum mismatch! The downloaded file is deleted.")
                 sys.exit(1)
 
-            result = subprocess.run(["msiexec", "/i", output_path], check=False)
+            abs_path = os.path.abspath(output_path)
+            result = subprocess.run(["msiexec", "/i", abs_path], check=False)
             if result.returncode not in MSI_OK:
                 print(f"The JDK installer did not complete (exit code: {result.returncode}).")
                 sys.exit(1)
@@ -127,9 +155,13 @@ def main():
                 os.remove(output_path)
 
     elif sys.argv[1] == "paper":
-        version = sys.argv[2]
+        if sys.argv[2] == "latest":
+            version = get_MC_latest_version()
+            print(f"Latest Minecraft release: {version}")
+        else:
+            version = sys.argv[2]
         build = get_latest_version(version)
-
+        
         download_paper(build)
 
 if __name__ == "__main__":

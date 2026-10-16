@@ -17,7 +17,8 @@ A small command-line tool for setting up a Minecraft server on Windows.
 ## Usage
 
 ```
-python ServerTool.py <jdk|paper> <version>
+python ServerTool.py jdk <version>
+python ServerTool.py paper <version|latest> [path]
 ```
 
 Examples:
@@ -25,6 +26,7 @@ Examples:
 ```
 python ServerTool.py jdk 17
 python ServerTool.py paper 26.1.2
+python ServerTool.py paper 26.1.2 C:\\path\\to\\save
 ```
 
 ## Notes
