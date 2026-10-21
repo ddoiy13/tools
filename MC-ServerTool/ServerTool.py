@@ -3,18 +3,21 @@ import subprocess
 import sys
 import os
 import hashlib
+import re
+from pathlib import Path
 
 BASENAME = os.path.basename(__file__)
 USAGE = (
     "Usage:\n"
     f"  python {BASENAME} jdk <version>\n"
-    f"  python {BASENAME} paper <version|latest> [path]\n"
+    f"  python {BASENAME} paper <version|latest|update> [path]\n"
     "\n"
     "Examples:\n"
     f"  python {BASENAME} jdk 17\n"
     f"  python {BASENAME} paper 26.1.2\n"
     f"  python {BASENAME} paper latest\n"
-    f"  python {BASENAME} paper 26.1.2 C:\\path\\to\\save"
+    f"  python {BASENAME} paper 26.1.2 C:\\path\\to\\save\n"
+    f"  python {BASENAME} paper update C:\\path\\to\\existing\\paper.jar"
 )
 
 if len(sys.argv) < 3 or len(sys.argv) > 4 or sys.argv[1] not in ("jdk", "paper"):
@@ -26,6 +29,8 @@ PAPER_URL = "https://fill.papermc.io/v3"
 ASSETS_URL = "https://api.adoptium.net/v3/assets/latest/{version}/hotspot"
 MC_URL = "https://piston-meta.mojang.com/mc/game/version_manifest.json"
 TIMEOUT = 30 # seconds
+
+PATTERN = re.compile(r"^paper-([\d.]+)-(\d+)\.jar$")
 
 MSI_OK = (0, 3010) # 0 = success, 3010 = success but a reboot is required
 
@@ -62,8 +67,43 @@ def get_latest_version(version: str) -> dict:
     print(f"No stable Paper build found for version {version}.")
     sys.exit(1)
 
-def download_paper(build: dict, download_key: str = "server:default"):
-    path = sys.argv[3] if len(sys.argv) == 4 else None
+def get_installed_paper_version():
+    if len(sys.argv) < 4:
+        print("A path is required for update mode.")
+        sys.exit(1)
+
+    path = Path(sys.argv[3])
+    if path.is_file():
+        candidates = [path]
+    elif path.is_dir():
+        candidates = [p for p in path.iterdir() if p.is_file()]
+    else:
+        print(f"The specified path '{path}' does not exist.")
+        sys.exit(1)
+
+    results = []
+    for file_path in candidates:
+        match = PATTERN.match(file_path.name)
+        if match:
+            results.append({
+                "file_path": str(file_path),
+                "version": match.group(1),
+                "build": int(match.group(2)),
+            })
+
+    if not results:
+        return None
+    return max(
+        results,
+        key=lambda r: (tuple(map(int, r["version"].split("."))), r["build"]),
+    )
+    
+
+def download_paper(build: dict, build_number: int | None, download_key: str = "server:default"):
+    p = Path(sys.argv[3]) if len(sys.argv) == 4 else None
+    if p and p.is_file():
+        p = p.parent
+    path = str(p) if p else None
     if path:
         try:
             os.makedirs(path, exist_ok=True)
@@ -71,6 +111,13 @@ def download_paper(build: dict, download_key: str = "server:default"):
             print(f"Cannot use path '{path}': {e}")
             sys.exit(1)
     download_info = build["downloads"][download_key]
+    latest_build_number = build["id"]
+    if build_number is not None:
+        if int(build_number) >= latest_build_number:
+            print(f"The latest build is already installed.")
+            sys.exit(1)
+        elif int(build_number) < latest_build_number:
+            print(f"Updating from build {build_number} to {latest_build_number}.")
     url = download_info["url"]
     if path:
         file_name = os.path.basename(download_info["name"])
@@ -155,14 +202,27 @@ def main():
                 os.remove(output_path)
 
     elif sys.argv[1] == "paper":
+        installed = None
+        build_number = None
+
         if sys.argv[2] == "latest":
             version = get_MC_latest_version()
             print(f"Latest Minecraft release: {version}")
+        elif sys.argv[2] == "update":
+            installed = get_installed_paper_version()
+            if installed is None:
+                print("Could not determine the installed Paper version from the provided path.")
+                sys.exit(1)
+            version = installed["version"]
+            build_number = installed["build"]
         else:
             version = sys.argv[2]
+
         build = get_latest_version(version)
-        
-        download_paper(build)
+        download_paper(build, build_number)
+
+        if installed is not None:
+            os.remove(installed["file_path"])
 
 if __name__ == "__main__":
     try:
